@@ -1,0 +1,391 @@
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// ===============================
+// MA STORE RFID BILLING SYSTEM
+// Arduino Nano
+// ===============================
+
+// ---------- RFID ----------
+#define SS_PIN 10
+#define RST_PIN 9
+
+MFRC522 rfid(SS_PIN, RST_PIN);
+
+// ---------- LCD ----------
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// ---------- BUTTON ----------
+#define BUTTON_PIN 8
+
+// ---------- PRODUCTS ----------
+struct Product {
+  String uid;
+  String name;
+  int price;
+};
+
+// Replace these placeholder UIDs
+// with the actual UIDs printed in Serial Monitor.
+
+Product products[5] = {
+  {"57 15 60 B5", "COLD DRINK", 50},
+  {"CB 4E D5 19", "CHOCKLATE", 100},
+  {"CD 18 D9 6B", "FRUIT JUICE", 150},
+  {"14 99 CB AF", "Room Freshner", 80},
+  {"A0 52 89 3B", "BISCUITS", 200}
+};
+
+// ---------- CART ----------
+struct CartItem {
+  String uid;
+  String name;
+  int price;
+  int quantity;
+};
+
+CartItem cart[10];
+int cartCount = 0;
+int totalAmount = 0;
+
+// ---------- DEBOUNCE ----------
+unsigned long lastButtonTime = 0;
+const unsigned long debounceDelay = 250;
+
+// ---------- FUNCTION DECLARATIONS ----------
+String getUID();
+int findProduct(String uid);
+void addToCart(int productIndex, String uid);
+void displayWelcome();
+void displayProduct(String name, int price);
+void checkout();
+void printCardUID(String uid);
+
+// ===============================
+// SETUP
+// ===============================
+
+void setup() {
+
+  Serial.begin(9600);
+
+  SPI.begin();
+  rfid.PCD_Init();
+
+  lcd.init();
+  lcd.backlight();
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  displayWelcome();
+
+  Serial.println("================================");
+  Serial.println("MA STORE RFID BILLING SYSTEM");
+  Serial.println("Arduino Nano Ready");
+  Serial.println("================================");
+
+  Serial.println("Scan RFID cards to identify products.");
+  Serial.println("Press the button to checkout.");
+}
+
+// ===============================
+// LOOP
+// ===============================
+
+void loop() {
+
+  // ---------- RFID SCAN ----------
+
+  if (!rfid.PICC_IsNewCardPresent()) {
+    // Continue to button check
+  }
+  else if (rfid.PICC_ReadCardSerial()) {
+
+    String uid = getUID();
+
+    printCardUID(uid);
+
+    int productIndex = findProduct(uid);
+
+    if (productIndex >= 0) {
+
+      addToCart(productIndex, uid);
+
+      displayProduct(
+        products[productIndex].name,
+        products[productIndex].price
+      );
+
+      Serial.print("PRODUCT_FOUND|");
+      Serial.print(products[productIndex].name);
+      Serial.print("|PRICE=");
+      Serial.println(products[productIndex].price);
+
+    }
+    else {
+
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Unknown Card");
+
+      lcd.setCursor(0, 1);
+      lcd.print("Check Serial");
+
+      Serial.println("PRODUCT_NOT_FOUND");
+
+      delay(1500);
+
+      displayWelcome();
+    }
+
+    rfid.PICC_HaltA();
+    rfid.PCD_StopCrypto1();
+
+    // Prevent repeated reading of the same card
+    delay(1000);
+  }
+
+  // ---------- BUTTON ----------
+
+  if (
+    digitalRead(BUTTON_PIN) == LOW &&
+    millis() - lastButtonTime > debounceDelay
+  ) {
+
+    lastButtonTime = millis();
+
+    checkout();
+
+    // Wait for button release
+    while (digitalRead(BUTTON_PIN) == LOW) {
+      delay(10);
+    }
+  }
+}
+
+// ===============================
+// GET RFID UID
+// ===============================
+
+String getUID() {
+
+  String uid = "";
+
+  for (byte i = 0; i < rfid.uid.size; i++) {
+
+    if (rfid.uid.uidByte[i] < 0x10) {
+      uid += "0";
+    }
+
+    uid += String(
+      rfid.uid.uidByte[i],
+      HEX
+    );
+
+    if (i < rfid.uid.size - 1) {
+      uid += " ";
+    }
+  }
+
+  uid.toUpperCase();
+
+  return uid;
+}
+
+// ===============================
+// PRINT CARD UID
+// ===============================
+
+void printCardUID(String uid) {
+
+  Serial.println();
+  Serial.println("---------- RFID CARD ----------");
+
+  Serial.print("CARD_UID|");
+  Serial.println(uid);
+
+  Serial.println("--------------------------------");
+}
+
+// ===============================
+// FIND PRODUCT
+// ===============================
+
+int findProduct(String uid) {
+
+  for (int i = 0; i < 5; i++) {
+
+    if (uid == products[i].uid) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+// ===============================
+// ADD PRODUCT TO CART
+// ===============================
+
+void addToCart(int productIndex, String uid) {
+
+  String productName = products[productIndex].name;
+  int productPrice = products[productIndex].price;
+
+  // Check whether the product is already in cart
+
+  for (int i = 0; i < cartCount; i++) {
+
+    if (cart[i].uid == uid) {
+
+      cart[i].quantity++;
+
+      totalAmount += productPrice;
+
+      Serial.print("CART_UPDATED|");
+      Serial.print(productName);
+      Serial.print("|QTY=");
+      Serial.println(cart[i].quantity);
+
+      return;
+    }
+  }
+
+  // Add new product
+
+  if (cartCount < 10) {
+
+    cart[cartCount].uid = uid;
+    cart[cartCount].name = productName;
+    cart[cartCount].price = productPrice;
+    cart[cartCount].quantity = 1;
+
+    cartCount++;
+
+    totalAmount += productPrice;
+
+    Serial.print("CART_ADDED|");
+    Serial.print(productName);
+    Serial.print("|PRICE=");
+    Serial.println(productPrice);
+  }
+  else {
+
+    Serial.println("CART_FULL");
+  }
+}
+
+// ===============================
+// LCD PRODUCT DISPLAY
+// ===============================
+
+void displayProduct(String name, int price) {
+
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print(name.substring(0, 16));
+
+  lcd.setCursor(0, 1);
+  lcd.print("Rs.");
+  lcd.print(price);
+  lcd.print(" Added");
+
+  delay(1500);
+}
+
+// ===============================
+// WELCOME MESSAGE
+// ===============================
+
+void displayWelcome() {
+
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("MA STORE");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Welcome!");
+
+  delay(1500);
+}
+
+// ===============================
+// CHECKOUT
+// ===============================
+
+void checkout() {
+
+  if (cartCount == 0) {
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Cart Empty");
+
+    Serial.println("CHECKOUT_EMPTY");
+
+    delay(1500);
+
+    displayWelcome();
+
+    return;
+  }
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Generating QR...");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Please Wait");
+
+  Serial.println();
+  Serial.println("========== CHECKOUT ==========");
+
+  Serial.print("CHECKOUT|TOTAL=");
+  Serial.print(totalAmount);
+  Serial.print("|ITEMS=");
+
+  for (int i = 0; i < cartCount; i++) {
+
+    if (i > 0) {
+      Serial.print(";");
+    }
+
+    Serial.print(cart[i].name);
+    Serial.print(" x");
+    Serial.print(cart[i].quantity);
+  }
+
+  Serial.println();
+
+  // Print detailed card and product data
+  // so Python can receive all scanned items.
+
+  for (int i = 0; i < cartCount; i++) {
+
+    Serial.print("BILL_ITEM|UID=");
+    Serial.print(cart[i].uid);
+
+    Serial.print("|PRODUCT=");
+    Serial.print(cart[i].name);
+
+    Serial.print("|PRICE=");
+    Serial.print(cart[i].price);
+
+    Serial.print("|QTY=");
+    Serial.println(cart[i].quantity);
+  }
+
+  Serial.println("CHECKOUT_END");
+
+  // Clear cart after sending checkout data
+  cartCount = 0;
+  totalAmount = 0;
+
+  delay(2000);
+
+  displayWelcome();
+}
